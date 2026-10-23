@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import {
   ArrowRight,
@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { completeNextLesson, fetchDashboard, setActivePage, setCategory, setSearch } from "./features/coursesSlice.js";
 
-function Sidebar() {
+function Sidebar({ onOpenHelp, onOpenSettings }) {
   const dispatch = useDispatch();
   const activePage = useSelector((state) => state.courses.activePage);
   const liveClassCount = useSelector((state) => state.courses.liveClasses.length);
@@ -42,6 +42,8 @@ function Sidebar() {
             className={`nav-link ${activePage === label ? "active" : ""}`}
             key={label}
             onClick={() => dispatch(setActivePage(label))}
+            aria-label={label}
+            aria-current={activePage === label ? "page" : undefined}
           >
             <Icon size={18} strokeWidth={1.8} />
             <span>{label}</span>
@@ -50,8 +52,8 @@ function Sidebar() {
         ))}
       </nav>
       <div className="sidebar-bottom">
-        <button className="nav-link utility-link"><CircleHelp size={18} /><span>Help center</span></button>
-        <button className="nav-link utility-link"><Settings size={18} /><span>Settings</span></button>
+        <button className="nav-link utility-link" aria-label="Help center" onClick={onOpenHelp}><CircleHelp size={18} /><span>Help center</span></button>
+        <button className="nav-link utility-link" aria-label="Settings" onClick={onOpenSettings}><Settings size={18} /><span>Settings</span></button>
         <div className="profile">
           <div className="profile-avatar">L</div>
           <div className="profile-copy"><strong>Learner</strong><span>Student</span></div>
@@ -62,7 +64,7 @@ function Sidebar() {
   );
 }
 
-function Header() {
+function Header({ searchInputRef, notifications, notificationsOpen, notificationsRead, remindersEnabled, onToggleNotifications, onMarkNotificationsRead, onViewSchedule }) {
   const dispatch = useDispatch();
   const { search, activePage } = useSelector((state) => state.courses);
   return (
@@ -72,16 +74,53 @@ function Header() {
         <label className="search-box">
           <Search size={17} />
           <input
+            ref={searchInputRef}
             aria-label="Search courses"
             placeholder="Search anything..."
             value={search}
             onChange={(event) => dispatch(setSearch(event.target.value))}
           />
-          <kbd>⌘ K</kbd>
+          <kbd>Ctrl/⌘ K</kbd>
         </label>
-        <button className="icon-button notification-button" aria-label="Notifications">
-          <Bell size={19} /><span className="notification-dot" />
-        </button>
+        <div className="notification-container">
+          <button
+            className="icon-button notification-button"
+            aria-label="Notifications"
+            aria-expanded={notificationsOpen}
+            onClick={onToggleNotifications}
+          >
+            <Bell size={19} />
+            {remindersEnabled && notifications.length > 0 && !notificationsRead && <span className="notification-dot" />}
+          </button>
+          {notificationsOpen && (
+            <section className="notification-panel" aria-label="Notifications">
+              <div className="panel-heading">
+                <strong>Notifications</strong>
+                {notifications.length > 0 && !notificationsRead && (
+                  <button className="panel-action" onClick={onMarkNotificationsRead}>Mark all read</button>
+                )}
+              </div>
+              {!remindersEnabled ? (
+                <p className="panel-empty">Class reminders are turned off in Settings.</p>
+              ) : notifications.length ? (
+                <>
+                  <div className="notification-list">
+                    {notifications.map((item) => (
+                      <div className="notification-item" key={item.id}>
+                        <span className="notification-item-icon"><CalendarDays size={16} /></span>
+                        <div>
+                          <strong>{item.title}</strong>
+                          <span>{item.instructor} · {new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(item.startsAt))}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <button className="panel-link" onClick={onViewSchedule}>View live class schedule <ArrowRight size={14} /></button>
+                </>
+              ) : <p className="panel-empty">You’re all caught up. There are no upcoming live classes.</p>}
+            </section>
+          )}
+        </div>
         <div className="top-avatar">L</div>
       </div>
     </header>
@@ -123,7 +162,9 @@ function WelcomeBanner({ completed, total }) {
   );
 }
 
-function CourseCard({ course, onContinue }) {
+function CourseCard({ course, isSaved, onContinue, onToggleSaved, onViewDetails }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+
   return (
     <article className="course-card">
       <div className={`course-art ${course.accent} ${course.thumbnailUrl ? "has-thumbnail" : ""}`}>
@@ -136,7 +177,25 @@ function CourseCard({ course, onContinue }) {
       <div className="course-card-body">
         <div className="course-heading">
           <div><h3>{course.title}</h3><p>{course.subtitle}</p></div>
-          <button className="more-button" aria-label={`More options for ${course.title}`}>···</button>
+          <div className="course-menu">
+            <button
+              className="more-button"
+              aria-label={`More options for ${course.title}`}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((open) => !open)}
+            >···</button>
+            {menuOpen && (
+              <div className="course-menu-popover" role="menu">
+                <button role="menuitem" onClick={() => { onToggleSaved(course.id); setMenuOpen(false); }}>
+                  {isSaved ? "Remove from saved" : "Save course"}
+                </button>
+                <button role="menuitem" onClick={() => { onViewDetails(course.id); setMenuOpen(false); }}>
+                  View course details
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         <div className="instructor-row">
           <div className="instructor-avatar">{course.instructor.split(" ").map((part) => part[0]).join("")}</div>
@@ -155,6 +214,88 @@ function CourseCard({ course, onContinue }) {
         </div>
       </div>
     </article>
+  );
+}
+
+function Dialog({ title, onClose, children }) {
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="dialog-backdrop" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section className="dialog-card" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+        <div className="dialog-heading">
+          <h2 id="dialog-title">{title}</h2>
+          <button className="dialog-close" aria-label="Close dialog" onClick={onClose}>×</button>
+        </div>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+function CourseDetailsDialog({ course, onClose, onContinue }) {
+  return (
+    <Dialog title={course.title} onClose={onClose}>
+      <div className="course-details">
+        <span className="details-category">{course.category}</span>
+        <p>{course.subtitle}</p>
+        <dl>
+          <div><dt>Instructor</dt><dd>{course.instructor}</dd></div>
+          <div><dt>Progress</dt><dd>{course.lessonsComplete} of {course.lessonsTotal} lessons ({course.progress}%)</dd></div>
+          <div><dt>Next lesson</dt><dd>{course.nextLesson}</dd></div>
+        </dl>
+        <button
+          className="dialog-primary"
+          onClick={() => onContinue(course.id)}
+          disabled={course.lessonsComplete >= course.lessonsTotal}
+        >
+          {course.lessonsComplete >= course.lessonsTotal ? "Course completed" : "Complete next lesson"}
+        </button>
+      </div>
+    </Dialog>
+  );
+}
+
+function HelpDialog({ onClose }) {
+  return (
+    <Dialog title="Help center" onClose={onClose}>
+      <div className="help-content">
+        <p>Make the most of your learning space.</p>
+        <ul>
+          <li>Search by course title, topic, or instructor using the search box.</li>
+          <li>Filter courses by category and use the sort control to arrange them by title.</li>
+          <li>Use the arrow on a course card to mark its next lesson complete.</li>
+          <li>Open Notifications to review upcoming live classes.</li>
+        </ul>
+        <a className="dialog-primary dialog-link" href="mailto:hello@learnspace.example">Contact learner support</a>
+      </div>
+    </Dialog>
+  );
+}
+
+function SettingsDialog({ remindersEnabled, reducedMotion, onClose, onToggleReminders, onToggleReducedMotion }) {
+  return (
+    <Dialog title="Learning preferences" onClose={onClose}>
+      <div className="settings-content">
+        <p>These preferences apply for this session.</p>
+        <label className="settings-option">
+          <span><strong>Live class reminders</strong><small>Show upcoming classes in Notifications.</small></span>
+          <input type="checkbox" checked={remindersEnabled} onChange={onToggleReminders} />
+        </label>
+        <label className="settings-option">
+          <span><strong>Reduce motion</strong><small>Turn off animated loading and hover effects.</small></span>
+          <input type="checkbox" checked={reducedMotion} onChange={onToggleReducedMotion} />
+        </label>
+      </div>
+    </Dialog>
   );
 }
 
@@ -205,10 +346,31 @@ function DashboardLoading() {
 function App() {
   const dispatch = useDispatch();
   const { courses, activeCategory, search, liveClasses, activePage, status, error } = useSelector((state) => state.courses);
+  const searchInputRef = useRef(null);
   const [sortByTitle, setSortByTitle] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationsRead, setNotificationsRead] = useState(false);
+  const [remindersEnabled, setRemindersEnabled] = useState(true);
+  const [reducedMotion, setReducedMotion] = useState(false);
+  const [savedCourseIds, setSavedCourseIds] = useState([]);
+  const [selectedCourseId, setSelectedCourseId] = useState(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
   useEffect(() => {
     if (status === "idle") dispatch(fetchDashboard());
   }, [dispatch, status]);
+
+  useEffect(() => {
+    const handleSearchShortcut = (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleSearchShortcut);
+    return () => window.removeEventListener("keydown", handleSearchShortcut);
+  }, []);
 
   const categories = useMemo(
     () => ["All courses", ...new Set(courses.map((course) => course.category).filter(Boolean))],
@@ -224,13 +386,26 @@ function App() {
     return sortByTitle ? matchingCourses.sort((first, second) => first.title.localeCompare(second.title)) : matchingCourses;
   }, [courses, activeCategory, search, sortByTitle]);
   const completedLessons = courses.reduce((sum, course) => sum + course.lessonsComplete, 0);
+  const selectedCourse = courses.find((course) => course.id === selectedCourseId);
   const isLoading = status === "idle" || status === "loading";
 
   return (
-    <div className="app-shell">
-      <Sidebar />
+    <div className={`app-shell ${reducedMotion ? "reduced-motion" : ""}`}>
+      <Sidebar onOpenHelp={() => setHelpOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
       <main className="main-area">
-        <Header />
+        <Header
+          searchInputRef={searchInputRef}
+          notifications={liveClasses}
+          notificationsOpen={notificationsOpen}
+          notificationsRead={notificationsRead}
+          remindersEnabled={remindersEnabled}
+          onToggleNotifications={() => setNotificationsOpen((open) => !open)}
+          onMarkNotificationsRead={() => setNotificationsRead(true)}
+          onViewSchedule={() => {
+            dispatch(setActivePage("Live classes"));
+            setNotificationsOpen(false);
+          }}
+        />
         <div className="page-content">
           {isLoading ? <DashboardLoading /> : status === "failed" ? (
             <section className="load-error" role="alert">
@@ -263,7 +438,18 @@ function App() {
             </div>
             {filteredCourses.length ? (
               <div className="course-grid">
-                {filteredCourses.map((course) => <CourseCard key={course.id} course={course} onContinue={(id) => dispatch(completeNextLesson(id))} />)}
+                {filteredCourses.map((course) => (
+                  <CourseCard
+                    key={course.id}
+                    course={course}
+                    isSaved={savedCourseIds.includes(course.id)}
+                    onContinue={(id) => dispatch(completeNextLesson(id))}
+                    onToggleSaved={(id) => setSavedCourseIds((saved) => (
+                      saved.includes(id) ? saved.filter((savedId) => savedId !== id) : [...saved, id]
+                    ))}
+                    onViewDetails={setSelectedCourseId}
+                  />
+                ))}
               </div>
             ) : courses.length === 0 ? (
               <div className="empty-state"><BookOpen size={22} /><strong>No courses available yet</strong><span>Published courses will appear here.</span></div>
@@ -276,6 +462,23 @@ function App() {
           </>}
         </div>
       </main>
+      {selectedCourse && (
+        <CourseDetailsDialog
+          course={selectedCourse}
+          onClose={() => setSelectedCourseId(null)}
+          onContinue={(id) => dispatch(completeNextLesson(id))}
+        />
+      )}
+      {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} />}
+      {settingsOpen && (
+        <SettingsDialog
+          remindersEnabled={remindersEnabled}
+          reducedMotion={reducedMotion}
+          onClose={() => setSettingsOpen(false)}
+          onToggleReminders={(event) => setRemindersEnabled(event.target.checked)}
+          onToggleReducedMotion={(event) => setReducedMotion(event.target.checked)}
+        />
+      )}
     </div>
   );
 }
