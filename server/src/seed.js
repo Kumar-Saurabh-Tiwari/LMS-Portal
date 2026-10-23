@@ -1,13 +1,12 @@
 import "dotenv/config";
-import { randomBytes, scrypt as scryptCallback } from "node:crypto";
-import { promisify } from "node:util";
+import { randomBytes } from "node:crypto";
+import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
 import { connectToDatabase } from "./config/database.js";
 import { Course } from "./models/Course.js";
 import { Lesson } from "./models/Lesson.js";
 import { User } from "./models/User.js";
 
-const scrypt = promisify(scryptCallback);
 const instructors = [
   { name: "Mira Chen", email: "mira.chen.seed@learnspace.example" },
   { name: "Luis Ortega", email: "luis.ortega.seed@learnspace.example" },
@@ -53,9 +52,8 @@ const courses = [
 ];
 
 async function createInstructor(instructor) {
-  const salt = randomBytes(16).toString("hex");
-  const randomSecret = randomBytes(32);
-  const passwordHash = (await scrypt(randomSecret, salt, 64)).toString("hex");
+  const initialPassword = process.env.SEED_INSTRUCTOR_PASSWORD ?? randomBytes(32).toString("base64url");
+  const passwordHash = await bcrypt.hash(initialPassword, 12);
 
   return User.findOneAndUpdate(
     { email: instructor.email },
@@ -63,7 +61,7 @@ async function createInstructor(instructor) {
       $setOnInsert: {
         name: instructor.name,
         email: instructor.email,
-        passwordHash: `scrypt$${salt}$${passwordHash}`,
+        passwordHash,
         roles: ["instructor"],
       },
     },

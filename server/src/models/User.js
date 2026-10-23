@@ -49,6 +49,7 @@ const userSchema = new Schema(
     instructorProfile: {
       bio: { type: String, maxlength: 2000 },
       expertise: [{ type: String, trim: true }],
+      paymentAccountId: { type: String, trim: true },
     },
     status: {
       type: String,
@@ -57,7 +58,15 @@ const userSchema = new Schema(
       required: true,
     },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: {
+      transform(document, user) {
+        delete user.passwordHash;
+        return user;
+      },
+    },
+  }
 );
 
 export const User = model("User", userSchema);

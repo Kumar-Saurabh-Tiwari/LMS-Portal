@@ -24,6 +24,16 @@ const lessonProgressSchema = new Schema(
   { _id: false }
 );
 
+const quizAttemptSchema = new Schema(
+  {
+    lesson: { type: Schema.Types.ObjectId, ref: "Lesson", required: true },
+    score: { type: Number, min: 0, max: 100, required: true },
+    passed: { type: Boolean, required: true },
+    submittedAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
 const enrollmentSchema = new Schema(
   {
     student: {
@@ -65,6 +75,7 @@ const enrollmentSchema = new Schema(
         min: 0,
         default: 0,
       },
+      quizAttempts: { type: [quizAttemptSchema], default: [] },
     },
     purchase: {
       amount: { type: Number, min: 0 },

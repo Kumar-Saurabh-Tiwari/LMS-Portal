@@ -4,6 +4,7 @@ import mongoose from "mongoose";
 import { Course } from "../src/models/Course.js";
 import { Enrollment } from "../src/models/Enrollment.js";
 import { Lesson } from "../src/models/Lesson.js";
+import { Quiz } from "../src/models/Quiz.js";
 import { User } from "../src/models/User.js";
 
 test("user defaults to the student role and hides password hashes", () => {
@@ -25,7 +26,7 @@ test("user rejects an empty role list", async () => {
     roles: [],
   });
 
-  await assert.rejects(user.validate(), (error) => error.errors.roles);
+  await assert.rejects(user.validate(), (error) => Boolean(error.errors.roles));
 });
 
 test("paid courses require a positive integer amount", async () => {
@@ -37,7 +38,7 @@ test("paid courses require a positive integer amount", async () => {
     pricing: { type: "paid", amount: 10.5 },
   });
 
-  await assert.rejects(course.validate(), (error) => error.errors["pricing.amount"]);
+  await assert.rejects(course.validate(), (error) => Boolean(error.errors["pricing.amount"]));
 });
 
 test("lesson positions must be non-negative integers", async () => {
@@ -48,13 +49,23 @@ test("lesson positions must be non-negative integers", async () => {
     type: "video",
   });
 
-  await assert.rejects(lesson.validate(), (error) => error.errors.position);
+  await assert.rejects(lesson.validate(), (error) => Boolean(error.errors.position));
 });
 
 test("enrollment requires student and course references", async () => {
   const enrollment = new Enrollment({});
 
   await assert.rejects(enrollment.validate(), (error) => {
-    return error.errors.student && error.errors.course;
+    return Boolean(error.errors.student && error.errors.course);
+  });
+
+  test("quiz answers must refer to an available option", async () => {
+    const quiz = new Quiz({
+      lesson: new mongoose.Types.ObjectId(),
+      title: "Basics",
+      questions: [{ prompt: "Choose one", options: ["A", "B"], correctOption: 2 }],
+    });
+
+    await assert.rejects(quiz.validate(), (error) => Boolean(error.errors["questions.0.correctOption"]));
   });
 });

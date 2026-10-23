@@ -65,14 +65,26 @@ test("dashboard API returns published courses and upcoming live lessons", async 
     title: "Design Foundations",
     subtitle: "Learn the fundamentals.",
     instructor: "Ada Instructor",
+    canManage: false,
     category: "Design",
     thumbnailUrl: "https://example.test/design.jpg",
+    isEnrolled: false,
+    enrollmentId: null,
     progress: 0,
     lessonsComplete: 0,
     lessonsTotal: 1,
+    lessons: [{
+      id: "lesson-1",
+      title: "Design critique",
+      type: "live",
+      durationSeconds: 0,
+      liveClassStatus: "scheduled",
+    }],
     accent: "lavender",
     artwork: "✳",
     nextLesson: "Course outline coming soon",
+    nextLessonId: null,
+    nextLessonType: null,
   });
   assert.equal(payload.liveClasses[0].id, "lesson-1");
   assert.equal(payload.liveClasses[0].title, "Design critique");

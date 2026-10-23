@@ -1,16 +1,10 @@
 import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
-
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:5000";
+import { apiRequest } from "../api.js";
 
 export const fetchDashboard = createAsyncThunk(
   "courses/fetchDashboard",
-  async () => {
-    const response = await fetch(`${API_BASE_URL}/api/dashboard`);
-    const payload = await response.json().catch(() => null);
-
-    if (!response.ok) {
-      throw new Error(payload?.error ?? "Unable to load your learning dashboard.");
-    }
+  async (_, { getState }) => {
+    const payload = await apiRequest("/dashboard", { token: getState().auth.token });
     if (!Array.isArray(payload?.courses) || !Array.isArray(payload?.liveClasses)) {
       throw new Error("The dashboard response is incomplete. Please try again.");
     }
@@ -48,11 +42,9 @@ const coursesSlice = createSlice({
     setActivePage(state, action) {
       state.activePage = action.payload;
     },
-    completeNextLesson(state, action) {
-      const course = state.courses.find((item) => item.id === action.payload);
-      if (!course || course.lessonsComplete >= course.lessonsTotal) return;
-      course.lessonsComplete += 1;
-      course.progress = Math.round((course.lessonsComplete / course.lessonsTotal) * 100);
+    resetDashboard(state) {
+      state.status = "idle";
+      state.error = null;
     },
   },
   extraReducers: (builder) => {
@@ -73,5 +65,5 @@ const coursesSlice = createSlice({
   },
 });
 
-export const { setCategory, setSearch, setActivePage, completeNextLesson } = coursesSlice.actions;
+export const { setCategory, setSearch, setActivePage, resetDashboard } = coursesSlice.actions;
 export default coursesSlice.reducer;

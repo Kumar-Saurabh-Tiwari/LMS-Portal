@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import {
   ArrowRight,
@@ -16,9 +16,19 @@ import {
   Sparkles,
   Video,
 } from "lucide-react";
-import { completeNextLesson, fetchDashboard, setActivePage, setCategory, setSearch } from "./features/coursesSlice.js";
+import { fetchDashboard, resetDashboard, setActivePage, setCategory, setSearch } from "./features/coursesSlice.js";
+import { restoreSession, signOut } from "./features/authSlice.js";
+import { apiRequest, API_BASE_URL } from "./api.js";
+import {
+  AuthDialog,
+  InstructorPanel,
+  QuizDialog,
+  triggerCertificateDownload,
+  VideoDialog,
+} from "./features/PortalFeatures.jsx";
+const LiveClassDialog = lazy(() => import("./features/LiveClassDialog.jsx").then((module) => ({ default: module.LiveClassDialog })));
 
-function Sidebar({ onOpenHelp, onOpenSettings }) {
+function Sidebar({ user, onOpenHelp, onOpenSettings }) {
   const dispatch = useDispatch();
   const activePage = useSelector((state) => state.courses.activePage);
   const liveClassCount = useSelector((state) => state.courses.liveClasses.length);
@@ -27,6 +37,7 @@ function Sidebar({ onOpenHelp, onOpenSettings }) {
     { label: "Courses", icon: BookOpen },
     { label: "Live classes", icon: Video },
     { label: "Explore", icon: Compass },
+    ...(user?.roles.some((role) => ["instructor", "admin"].includes(role)) ? [{ label: "Instructor", icon: Settings }] : []),
   ];
 
   return (
@@ -55,8 +66,8 @@ function Sidebar({ onOpenHelp, onOpenSettings }) {
         <button className="nav-link utility-link" aria-label="Help center" onClick={onOpenHelp}><CircleHelp size={18} /><span>Help center</span></button>
         <button className="nav-link utility-link" aria-label="Settings" onClick={onOpenSettings}><Settings size={18} /><span>Settings</span></button>
         <div className="profile">
-          <div className="profile-avatar">L</div>
-          <div className="profile-copy"><strong>Learner</strong><span>Student</span></div>
+          <div className="profile-avatar">{user?.name?.slice(0, 1).toUpperCase() ?? "L"}</div>
+          <div className="profile-copy"><strong>{user?.name ?? "Guest learner"}</strong><span>{user?.roles?.join(", ") ?? "Student"}</span></div>
           <ChevronDown size={16} className="profile-chevron" />
         </div>
       </div>
@@ -64,7 +75,7 @@ function Sidebar({ onOpenHelp, onOpenSettings }) {
   );
 }
 
-function Header({ searchInputRef, notifications, notificationsOpen, notificationsRead, remindersEnabled, onToggleNotifications, onMarkNotificationsRead, onViewSchedule }) {
+function Header({ searchInputRef, user, notifications, notificationsOpen, notificationsRead, remindersEnabled, onAccount, onToggleNotifications, onMarkNotificationsRead, onViewSchedule }) {
   const dispatch = useDispatch();
   const { search, activePage } = useSelector((state) => state.courses);
   return (
@@ -121,7 +132,7 @@ function Header({ searchInputRef, notifications, notificationsOpen, notification
             </section>
           )}
         </div>
-        <div className="top-avatar">L</div>
+        <button className="top-account-button" onClick={onAccount}>{user ? "Sign out" : "Sign in"}</button>
       </div>
     </header>
   );
@@ -206,11 +217,11 @@ function CourseCard({ course, isSaved, onContinue, onToggleSaved, onViewDetails 
         <div className="progress-track"><span style={{ width: `${course.progress}%` }} /></div>
         <div className="next-lesson"><div><span className="next-label">UP NEXT</span><strong>{course.nextLesson}</strong></div>
           <button
-            className="continue-button"
-            onClick={() => onContinue(course.id)}
-            disabled={course.lessonsComplete >= course.lessonsTotal}
-            aria-label={`Complete next lesson in ${course.title}`}
-          ><ArrowRight size={17} /></button>
+            className={`continue-button ${course.isEnrolled ? "" : "enroll-button"}`}
+            onClick={() => onContinue(course)}
+            disabled={course.isEnrolled && course.lessonsComplete >= course.lessonsTotal}
+            aria-label={`${course.isEnrolled ? "Continue" : "Enroll in"} ${course.title}`}
+          >{course.isEnrolled ? <ArrowRight size={17} /> : "Enroll"}</button>
         </div>
       </div>
     </article>
@@ -241,25 +252,47 @@ function Dialog({ title, onClose, children }) {
   );
 }
 
-function CourseDetailsDialog({ course, onClose, onContinue }) {
+function CourseDetailsDialog({ course, onClose, onEnroll, onOpenLesson, onDownloadCertificate, isAuthenticated }) {
+  const lessons = Array.isArray(course.lessons) ? course.lessons.filter(Boolean) : [];
+  const progress = Number.isFinite(course.progress) ? course.progress : 0;
+  const lessonsComplete = Number.isFinite(course.lessonsComplete) ? course.lessonsComplete : 0;
+  const lessonsTotal = Number.isFinite(course.lessonsTotal) ? course.lessonsTotal : lessons.length;
+
   return (
     <Dialog title={course.title} onClose={onClose}>
       <div className="course-details">
-        <span className="details-category">{course.category}</span>
-        <p>{course.subtitle}</p>
+        <span className="details-category">{course.category || "General"}</span>
+        <p>{course.subtitle || "Explore the lessons in this course."}</p>
         <dl>
-          <div><dt>Instructor</dt><dd>{course.instructor}</dd></div>
-          <div><dt>Progress</dt><dd>{course.lessonsComplete} of {course.lessonsTotal} lessons ({course.progress}%)</dd></div>
-          <div><dt>Next lesson</dt><dd>{course.nextLesson}</dd></div>
+          <div><dt>Instructor</dt><dd>{course.instructor || "Instructor"}</dd></div>
+          <div><dt>Progress</dt><dd>{lessonsComplete} of {lessonsTotal} lessons ({progress}%)</dd></div>
+          <div><dt>Next lesson</dt><dd>{course.nextLesson || "Course outline coming soon"}</dd></div>
         </dl>
-        <button
-          className="dialog-primary"
-          onClick={() => onContinue(course.id)}
-          disabled={course.lessonsComplete >= course.lessonsTotal}
-        >
-          {course.lessonsComplete >= course.lessonsTotal ? "Course completed" : "Complete next lesson"}
-        </button>
+        {!course.isEnrolled && !course.canManage && <button className="dialog-primary" onClick={() => onEnroll(course)}>
+          {course.pricing?.type === "paid" ? `Enroll · ${course.pricing.currency} ${course.pricing.amount}` : isAuthenticated ? "Enroll for free" : "Sign in to enroll"}
+        </button>}
+        <h3>Course lessons</h3>
+        {lessons.length ? <div className="course-detail-lessons">{lessons.filter((lesson) => course.isEnrolled || lesson.isPreview || course.canManage).map((lesson) => (
+            <div className="course-detail-lesson" key={lesson.id}>
+              <span>{lesson.title}<small>{lesson.type}{lesson.videoStatus ? ` · ${lesson.videoStatus}` : ""}</small></span>
+              <button
+                className="portal-secondary"
+                onClick={() => onOpenLesson(course, lesson)}
+                disabled={!lesson.isPreview && !course.isEnrolled && !course.canManage}
+              >{lesson.type === "video" ? "Watch" : lesson.type === "quiz" ? "Take quiz" : lesson.type === "live" ? lesson.liveClassStatus === "ended" ? "Mark complete" : "Join class" : "Complete"}</button>
+            </div>
+        ))}</div> : <p className="course-lessons-empty">Lesson details are not available yet.</p>}
+        {progress >= 100 && course.enrollmentId && <button className="dialog-primary" onClick={() => onDownloadCertificate(course.enrollmentId)}>Download certificate</button>}
       </div>
+    </Dialog>
+  );
+}
+
+function TextLessonDialog({ lesson, onClose, onComplete }) {
+  return (
+    <Dialog title={lesson.title} onClose={onClose}>
+      <div className="text-lesson-content">{lesson.textContent}</div>
+      {lesson.canComplete && <button className="dialog-primary" onClick={onComplete}>Mark lesson complete</button>}
     </Dialog>
   );
 }
@@ -272,7 +305,7 @@ function HelpDialog({ onClose }) {
         <ul>
           <li>Search by course title, topic, or instructor using the search box.</li>
           <li>Filter courses by category and use the sort control to arrange them by title.</li>
-          <li>Use the arrow on a course card to mark its next lesson complete.</li>
+          <li>Enroll in a course, open its lesson outline, and complete lessons to save your progress.</li>
           <li>Open Notifications to review upcoming live classes.</li>
         </ul>
         <a className="dialog-primary dialog-link" href="mailto:hello@learnspace.example">Contact learner support</a>
@@ -299,7 +332,7 @@ function SettingsDialog({ remindersEnabled, reducedMotion, onClose, onToggleRemi
   );
 }
 
-function LiveClasses({ classes }) {
+function LiveClasses({ classes, isAuthenticated, onJoin }) {
   const dispatch = useDispatch();
 
   return (
@@ -319,7 +352,12 @@ function LiveClasses({ classes }) {
           <article className="live-card" key={item.id}>
             <div className={`live-date ${item.status === "live" ? "today" : ""}`}><span>{month}</span><strong>{day}</strong></div>
             <div className="live-details"><h3>{item.title}</h3><div className="live-meta"><span className={`live-avatar ${item.status === "live" ? "violet" : "orange"}`}>{initials}</span><span>{item.instructor}</span><span className="meta-separator">·</span><Clock3 size={13} /><span>{time}</span></div></div>
-            <button className={`remind-button ${item.status === "live" ? "join-button" : ""}`} disabled title="Class access requires an authenticated session">{item.status === "live" ? "Live now" : "Upcoming"}</button>
+            <button
+              className={`remind-button ${item.status === "live" ? "join-button" : ""}`}
+              onClick={() => onJoin(item.id)}
+              disabled={!isAuthenticated}
+              title={isAuthenticated ? "Join live class" : "Sign in to join this class"}
+            >{item.status === "live" ? "Join now" : "Upcoming"}</button>
           </article>
           );
         })}
@@ -346,6 +384,7 @@ function DashboardLoading() {
 function App() {
   const dispatch = useDispatch();
   const { courses, activeCategory, search, liveClasses, activePage, status, error } = useSelector((state) => state.courses);
+  const { user, token, status: authStatus, error: authError } = useSelector((state) => state.auth);
   const searchInputRef = useRef(null);
   const [sortByTitle, setSortByTitle] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -356,10 +395,27 @@ function App() {
   const [selectedCourseId, setSelectedCourseId] = useState(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const [activeQuizLesson, setActiveQuizLesson] = useState(null);
+  const [activeLiveLesson, setActiveLiveLesson] = useState(null);
+  const [videoUrl, setVideoUrl] = useState("");
+  const [videoLessonId, setVideoLessonId] = useState(null);
+  const [activeTextLesson, setActiveTextLesson] = useState(null);
 
   useEffect(() => {
-    if (status === "idle") dispatch(fetchDashboard());
-  }, [dispatch, status]);
+    if (authStatus === "idle" || (authStatus === "failed" && !token)) {
+      if (token) dispatch(restoreSession());
+      else if (status === "idle") dispatch(fetchDashboard());
+    }
+  }, [dispatch, authStatus, token, status]);
+
+  useEffect(() => {
+    if (authStatus === "succeeded" && user) {
+      dispatch(resetDashboard());
+      dispatch(fetchDashboard());
+    }
+  }, [dispatch, authStatus, user]);
 
   useEffect(() => {
     const handleSearchShortcut = (event) => {
@@ -386,19 +442,97 @@ function App() {
     return sortByTitle ? matchingCourses.sort((first, second) => first.title.localeCompare(second.title)) : matchingCourses;
   }, [courses, activeCategory, search, sortByTitle]);
   const completedLessons = courses.reduce((sum, course) => sum + course.lessonsComplete, 0);
-  const selectedCourse = courses.find((course) => course.id === selectedCourseId);
+  const selectedCourse = courses.find((course) => String(course.id) === String(selectedCourseId));
   const isLoading = status === "idle" || status === "loading";
+  const refreshDashboard = useCallback(async () => {
+    dispatch(resetDashboard());
+    await dispatch(fetchDashboard()).unwrap();
+  }, [dispatch]);
+
+  async function enrollInCourse(course) {
+    if (!user) {
+      setAuthOpen(true);
+      return;
+    }
+    setActionError("");
+    try {
+      if (course.pricing?.type === "paid") {
+        const { checkoutUrl } = await apiRequest("/payments/checkout", {
+          token,
+          method: "POST",
+          body: JSON.stringify({ courseId: course.id }),
+        });
+        window.location.assign(checkoutUrl);
+        return;
+      }
+      await apiRequest(`/courses/${course.id}/enroll`, { token, method: "POST" });
+      await refreshDashboard();
+    } catch (requestError) {
+      setActionError(requestError.message);
+    }
+  }
+
+  async function openLesson(course, lesson) {
+    if (!user && (!lesson.isPreview || lesson.type === "quiz")) {
+      setAuthOpen(true);
+      return;
+    }
+    setActionError("");
+    try {
+      if (lesson.type === "quiz") {
+        setActiveQuizLesson(lesson.id);
+      } else if (lesson.type === "video") {
+        const { url } = await apiRequest(`/lessons/${lesson.id}/stream`, { token });
+        setVideoUrl(url.startsWith("http") ? url : `${API_BASE_URL}${url}`);
+        setVideoLessonId(course.isEnrolled && user?.roles.includes("student") ? lesson.id : null);
+      } else if (lesson.type === "live") {
+        if (lesson.liveClassStatus === "ended") {
+          await apiRequest(`/lessons/${lesson.id}/complete`, { token, method: "POST", body: JSON.stringify({}) });
+          await refreshDashboard();
+        } else {
+          setActiveLiveLesson(lesson.id);
+        }
+      } else {
+        setActiveTextLesson({
+          id: lesson.id,
+          title: lesson.title,
+          textContent: lesson.textContent ?? "",
+          canComplete: Boolean(course.isEnrolled && user),
+        });
+      }
+    } catch (requestError) {
+      setActionError(requestError.message);
+    }
+  }
+
+  async function downloadCertificate(enrollmentId) {
+    try {
+      await triggerCertificateDownload(enrollmentId, token);
+    } catch (requestError) {
+      setActionError(requestError.message);
+    }
+  }
 
   return (
     <div className={`app-shell ${reducedMotion ? "reduced-motion" : ""}`}>
-      <Sidebar onOpenHelp={() => setHelpOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
+      <Sidebar user={user} onOpenHelp={() => setHelpOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
       <main className="main-area">
         <Header
           searchInputRef={searchInputRef}
+          user={user}
           notifications={liveClasses}
           notificationsOpen={notificationsOpen}
           notificationsRead={notificationsRead}
           remindersEnabled={remindersEnabled}
+          onAccount={() => {
+            if (user) {
+              if (typeof sessionStorage !== "undefined") sessionStorage.removeItem("lms-token");
+              dispatch(signOut());
+              dispatch(resetDashboard());
+              dispatch(fetchDashboard());
+            }
+            else setAuthOpen(true);
+          }}
           onToggleNotifications={() => setNotificationsOpen((open) => !open)}
           onMarkNotificationsRead={() => setNotificationsRead(true)}
           onViewSchedule={() => {
@@ -407,6 +541,8 @@ function App() {
           }}
         />
         <div className="page-content">
+          {actionError && <p className="portal-error" role="alert">{actionError}</p>}
+          {authStatus === "failed" && authError && <p className="portal-error" role="alert">{authError}</p>}
           {isLoading ? <DashboardLoading /> : status === "failed" ? (
             <section className="load-error" role="alert">
               <strong>We couldn’t load your learning dashboard.</strong>
@@ -415,7 +551,9 @@ function App() {
             </section>
           ) : <>
           {activePage === "Overview" && <WelcomeBanner completed={completedLessons} total={courses.length} />}
-          {activePage !== "Live classes" && <section className="courses-section">
+          {activePage === "Instructor" && user?.roles.some((role) => ["instructor", "admin"].includes(role)) ? (
+            <InstructorPanel token={token} onRefresh={refreshDashboard} />
+          ) : activePage !== "Live classes" && <section className="courses-section">
             <div className="section-title-row courses-title-row">
               <div><div className="section-kicker">YOUR LEARNING JOURNEY</div><h2>Explore published courses</h2></div>
               <button
@@ -443,7 +581,7 @@ function App() {
                     key={course.id}
                     course={course}
                     isSaved={savedCourseIds.includes(course.id)}
-                    onContinue={(id) => dispatch(completeNextLesson(id))}
+                    onContinue={(course) => course.isEnrolled ? setSelectedCourseId(course.id) : enrollInCourse(course)}
                     onToggleSaved={(id) => setSavedCourseIds((saved) => (
                       saved.includes(id) ? saved.filter((savedId) => savedId !== id) : [...saved, id]
                     ))}
@@ -457,7 +595,11 @@ function App() {
               <div className="empty-state"><Search size={22} /><strong>No courses found</strong><span>Try another search or category.</span></div>
             )}
           </section>}
-          {activePage !== "Courses" && activePage !== "Explore" && <LiveClasses classes={liveClasses} />}
+          {activePage !== "Courses" && activePage !== "Explore" && activePage !== "Instructor" && <LiveClasses
+            classes={liveClasses}
+            isAuthenticated={Boolean(user)}
+            onJoin={(lessonId) => user ? setActiveLiveLesson(lessonId) : setAuthOpen(true)}
+          />}
           <footer className="page-footer"><span>Made for curious minds <span className="footer-heart">♥</span></span><span>Need a hand? <a href="mailto:hello@learnspace.example">We’re here to help</a></span></footer>
           </>}
         </div>
@@ -466,9 +608,57 @@ function App() {
         <CourseDetailsDialog
           course={selectedCourse}
           onClose={() => setSelectedCourseId(null)}
-          onContinue={(id) => dispatch(completeNextLesson(id))}
+          onContinue={(course) => course.isEnrolled ? setSelectedCourseId(course.id) : enrollInCourse(course)}
+          onEnroll={enrollInCourse}
+          onOpenLesson={openLesson}
+          onDownloadCertificate={downloadCertificate}
+          isAuthenticated={Boolean(user)}
         />
       )}
+      {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} />}
+      {activeQuizLesson && <QuizDialog lessonId={activeQuizLesson} token={token} onClose={() => setActiveQuizLesson(null)} onCompleted={refreshDashboard} />}
+      {activeLiveLesson && <Suspense fallback={<div role="status">Loading video room…</div>}>
+        <LiveClassDialog
+          lessonId={activeLiveLesson}
+          token={token}
+          user={user}
+          onClose={() => {
+            setActiveLiveLesson(null);
+            refreshDashboard().catch((refreshError) => setActionError(refreshError.message));
+          }}
+        />
+      </Suspense>}
+      {activeTextLesson && <TextLessonDialog
+        lesson={activeTextLesson}
+        onClose={() => setActiveTextLesson(null)}
+        onComplete={async () => {
+          try {
+            await apiRequest(`/lessons/${activeTextLesson.id}/complete`, { token, method: "POST", body: JSON.stringify({}) });
+            setActiveTextLesson(null);
+            await refreshDashboard();
+          } catch (completeError) {
+            setActionError(completeError.message);
+          }
+        }}
+      />}
+      {videoUrl && <VideoDialog
+        url={videoUrl}
+        onClose={() => setVideoUrl("")}
+        onComplete={async (lastPositionSeconds) => {
+          if (!user || !videoLessonId) return;
+          try {
+            await apiRequest(`/lessons/${videoLessonId}/complete`, {
+              token,
+              method: "POST",
+              body: JSON.stringify({ lastPositionSeconds }),
+            });
+            setVideoLessonId(null);
+            await refreshDashboard();
+          } catch (completeError) {
+            setActionError(completeError.message);
+          }
+        }}
+      />}
       {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} />}
       {settingsOpen && (
         <SettingsDialog
