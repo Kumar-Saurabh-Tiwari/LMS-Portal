@@ -6,6 +6,7 @@ const port = Number(process.env.PORT ?? 5000);
 
 try {
   await connectToDatabase();
+  console.info("Connected to MongoDB successfully.");
   app.listen(port, () => {
     console.log(`LMS API server listening on port ${port}.`);
   });
